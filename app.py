@@ -43,10 +43,10 @@ from diagrams.azure.compute import AppServices
 from diagrams.azure.security import KeyVaults
 from diagrams.azure.database import SQLDatabases
 from diagrams.azure.storage import StorageAccounts
-from diagrams.azure.management import Monitor
+from diagrams.azure.devops import ApplicationInsights
 from diagrams.azure.network import Bastion, VirtualNetworkGateways
 '''
- cls={"vnet":"VirtualNetworks","firewall":"Firewall","app":"AppServices","keyvault":"KeyVaults","sql":"SQLDatabases","storage":"StorageAccounts","monitor":"Monitor","bastion":"Bastion","vpn":"VirtualNetworkGateways"}
+ cls={"vnet":"VirtualNetworks","firewall":"Firewall","app":"AppServices","keyvault":"KeyVaults","sql":"SQLDatabases","storage":"StorageAccounts","monitor":"ApplicationInsights","bastion":"Bastion","vpn":"VirtualNetworkGateways"}
  lines=[imports,'with Diagram("Generated Architecture", filename="diagrams/generated_architecture", outformat="png", show=False, direction="LR"):', '    n = {}']
  grouped={}
  for x in nodes:
@@ -69,7 +69,7 @@ def generate():
  open(os.path.join(BASE,"last_requirement.txt"),"w").write(req)
  open(os.path.join(BASE,"architecture_model.json"),"w").write(json.dumps(model,indent=2))
  p=os.path.join(BASE,"generated_architecture.py"); open(p,"w").write(code)
- subprocess.run(["python",p],cwd=BASE,check=True)
+ subprocess.run(["python",p],cwd=BASE,check=True,timeout=30)
  dot=os.path.join(OUT,"generated_architecture.dot")
  # diagrams normally removes DOT; regenerate through graphviz source is not guaranteed, so use existing PNG and optional conversion path
  drawio=os.path.join(OUT,"generated_architecture.drawio")
