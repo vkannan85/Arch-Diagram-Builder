@@ -1,75 +1,107 @@
 from flask import Flask, send_file, render_template_string, request
-import os, subprocess, re, json
+import os, subprocess, re, json, html
 app=Flask(__name__)
 BASE=os.path.dirname(__file__); OUT=os.path.join(BASE,"diagrams"); os.makedirs(OUT,exist_ok=True)
-HTML='''<!doctype html><title>Arch Diagram Builder</title><style>body{font-family:Arial;margin:28px;background:#f5f7fb;color:#17233c;max-width:1200px}.card{background:white;padding:22px;border-radius:14px;margin-bottom:18px}textarea{width:100%;min-height:240px;padding:14px;box-sizing:border-box}button,a,select{padding:12px 16px;margin:8px 6px 8px 0;border-radius:8px}button,a{background:#1677ff;color:white;border:0;text-decoration:none;display:inline-block}pre{white-space:pre-wrap;background:#101827;color:#dce7ff;padding:16px;border-radius:10px;max-height:420px;overflow:auto}img{max-width:100%;border:1px solid #ddd;margin-top:15px}.error{background:#fff1f0;color:#a8071a;padding:14px;border-radius:8px}</style>
-<h1>Arch Diagram Builder</h1><p>Natural language → architecture model → generated Python → GraphViz → editable diagram</p>
-<div class=card><form method=post action=/generate><h3>1. Describe your architecture</h3><textarea name=requirements placeholder="Write paragraphs, bullet points or connections. Example: Create an Azure landing zone with a firewall in the hub network and two spoke networks, each containing two applications.">{{req}}</textarea><h3>2. Output</h3><select name=format><option value=drawio>Draw.io (editable)</option><option value=visio>Visio (.vsdx)</option></select><br><button>Generate from requirement</button></form></div>
-{% if error %}<div class="card error"><b>Generation error:</b> {{error}}</div>{% endif %}
-{% if ready %}<div class=card><h3>Interpreted architecture</h3><pre>{{model}}</pre><h3>Generated Python</h3><pre>{{code}}</pre><a href=/python>Download Python</a><a href=/png>PNG preview</a><a href=/drawio>Editable Draw.io</a>{% if visio %}<p>Native VSDX is not yet generated; editable Draw.io is provided as the intermediate.</p>{% endif %}<br><img src="/png?t={{stamp}}"></div>{% endif %}'''
+HTML='''<!doctype html><title>Arch Diagram Builder</title><style>body{font-family:Arial;margin:28px;background:#f5f7fb;color:#17233c;max-width:1200px}.card{background:white;padding:22px;border-radius:14px;margin-bottom:18px}textarea{width:100%;min-height:240px;padding:14px;box-sizing:border-box}button,a,select{padding:12px 16px;margin:8px 6px 8px 0;border-radius:8px}button,a{background:#1677ff;color:white;border:0;text-decoration:none;display:inline-block}pre{white-space:pre-wrap;background:#101827;color:#dce7ff;padding:16px;border-radius:10px;max-height:420px;overflow:auto}img{max-width:100%;border:1px solid #ddd;margin-top:15px}.error{background:#fff1f0;color:#a8071a;padding:14px;border-radius:8px}</style><h1>Arch Diagram Builder</h1><p>Natural language → structured architecture model → generated Python → GraphViz → editable diagram</p><div class=card><form method=post action=/generate><h3>1. Describe your architecture</h3><textarea name=requirements placeholder="Example: Create an Azure landing zone with a firewall and Bastion in the hub VNet and two spoke VNets, each containing two applications.">{{req}}</textarea><h3>2. Output</h3><select name=format><option value=drawio>Draw.io (editable)</option><option value=visio>Visio (.vsdx)</option></select><br><button>Generate from requirement</button></form></div>{% if error %}<div class="card error"><b>Generation error:</b> {{error}}</div>{% endif %}{% if ready %}<div class=card><h3>Interpreted architecture</h3><pre>{{model}}</pre><h3>Generated Python</h3><pre>{{code}}</pre><a href=/python>Download Python</a><a href=/png>PNG preview</a><a href=/drawio>Editable Draw.io</a>{% if visio %}<p>Native VSDX is not yet generated; editable Draw.io is provided as the intermediate.</p>{% endif %}<br><img src="/png?t={{stamp}}"></div>{% endif %}'''
+
 def interpret(text):
- t=text.lower(); nodes=[]; edges=[]; groups=[]
- def add(i,label,typ,group=None):
-  if not any(x["id"]==i for x in nodes): nodes.append({"id":i,"label":label,"type":typ,"group":group})
- hub=bool(re.search(r'\bhub\b',t)); spokes=re.findall(r'(?:spoke(?:\s+network|\s+vnet)?\s*(\d+))',t)
- spoke_count=max([int(x) for x in spokes],default=0)
+ t=text.lower(); containers=[]; nodes=[]; edges=[]
+ def container(i,label,parent=None,kind="vnet"):
+  if not any(x["id"]==i for x in containers): containers.append({"id":i,"label":label,"parent":parent,"kind":kind})
+ def node(i,label,typ,parent=None):
+  if not any(x["id"]==i for x in nodes): nodes.append({"id":i,"label":label,"type":typ,"parent":parent})
+ azure='azure' in t; hub=bool(re.search(r'\bhub\b',t))
+ if azure: container("azure","Azure Landing Zone",None,"landingzone")
+ root="azure" if azure else None
+ if hub:
+  container("hub","Hub VNet",root)
+  if 'firewall' in t:
+   container("fwsubnet","AzureFirewallSubnet","hub","subnet"); node("firewall","Azure Firewall","firewall","fwsubnet")
+  if 'bastion' in t:
+   container("bastionsubnet","AzureBastionSubnet","hub","subnet"); node("bastion","Azure Bastion","bastion","bastionsubnet")
+  if 'vpn gateway' in t or 'virtual network gateway' in t:
+   container("gwsubnet","GatewaySubnet","hub","subnet"); node("vpn","VPN Gateway","vpn","gwsubnet")
+ spokes=re.findall(r'(?:spoke(?:\s+network|\s+vnet)?\s*(\d+))',t); spoke_count=max([int(x) for x in spokes],default=0)
  m=re.search(r'(\d+)\s+spoke',t)
  if m: spoke_count=max(spoke_count,int(m.group(1)))
- if 'spoke' in t and spoke_count==0: spoke_count=2 if re.search(r'(two|2).*spoke',t) else 1
- if hub:
-  groups.append("Hub VNet"); add("hub","Hub VNet","vnet")
- if 'firewall' in t:
-  add("firewall","Azure Firewall","firewall","Hub VNet" if hub else None)
-  if hub: edges.append(("hub","firewall"))
- apps_each=2 if re.search(r'(two|2)\s+applications?.*(each|per)|each.*(two|2)\s+applications?',t) else 1
+ words={"one":1,"two":2,"three":3,"four":4,"five":5}
+ for w,n in words.items():
+  if re.search(r'\b'+w+r'\s+spoke',t): spoke_count=max(spoke_count,n)
+ if 'spoke' in t and not spoke_count: spoke_count=1
+ apps_each=1
+ m=re.search(r'(\d+)\s+applications?.{0,30}(?:each|per)',t)
+ if m: apps_each=int(m.group(1))
+ else:
+  for w,n in words.items():
+   if re.search(r'\b'+w+r'\s+applications?.{0,30}(?:each|per)',t): apps_each=n
  for s in range(1,spoke_count+1):
-  g=f"Spoke VNet {s}"; groups.append(g); sid=f"spoke{s}"; add(sid,g,"vnet")
-  if hub: edges.append(("hub",sid))
-  if 'firewall' in t: edges.append(("firewall",sid))
-  for a in range(1,apps_each+1):
-   aid=f"app{s}_{a}"; add(aid,f"Application {a}","app",g); edges.append((sid,aid))
- defs=[('key vault','keyvault','Azure Key Vault','keyvault'),('sql','sql','Azure SQL','sql'),('storage','storage','Azure Storage','storage'),('monitor','monitor','Azure Monitor','monitor'),('bastion','bastion','Azure Bastion','bastion'),('vpn gateway','vpn','VPN Gateway','vpn')]
- for key,i,l,typ in defs:
-  if key in t: add(i,l,typ)
- return {"provider":"Azure" if 'azure' in t else "Cloud","groups":groups,"nodes":nodes,"edges":edges}
+  sid=f"spoke{s}"; container(sid,f"Spoke VNet {s}",root)
+  appsub=f"appsub{s}"; container(appsub,"Application Subnet",sid,"subnet")
+  for a in range(1,apps_each+1): node(f"app{s}_{a}",f"Application {a}","app",appsub)
+  if hub: edges.append(["hub",sid,"VNet Peering"])
+ # common shared services, placed logically rather than floating
+ if 'key vault' in t: node("keyvault","Azure Key Vault","keyvault",root)
+ if 'sql' in t: node("sql","Azure SQL","sql",root)
+ if 'storage' in t: node("storage","Azure Storage","storage",root)
+ if 'monitor' in t: node("monitor","Azure Monitor","monitor",root)
+ return {"provider":"Azure" if azure else "Cloud","containers":containers,"nodes":nodes,"edges":edges}
+
 def pycode(model):
- nodes=model["nodes"]; edges=model["edges"]
- # Keep imports restricted to classes verified in the installed diagrams Azure modules.
- imports='''from diagrams import Diagram, Cluster\nfrom diagrams.azure.network import Firewall, VirtualNetworks, VirtualNetworkGateways\nfrom diagrams.azure.compute import AppServices\nfrom diagrams.azure.security import KeyVaults\nfrom diagrams.azure.database import SQLDatabases\nfrom diagrams.azure.storage import StorageAccounts\nfrom diagrams.azure.devops import ApplicationInsights\n'''
- # Azure Bastion has no stable dedicated class in the deployed diagrams version; represent it with VirtualNetworks rather than emitting an invalid import.
- cls={"vnet":"VirtualNetworks","firewall":"Firewall","app":"AppServices","keyvault":"KeyVaults","sql":"SQLDatabases","storage":"StorageAccounts","monitor":"ApplicationInsights","bastion":"VirtualNetworks","vpn":"VirtualNetworkGateways"}
- lines=[imports,'with Diagram("Generated Architecture", filename="diagrams/generated_architecture", outformat="png", show=False, direction="LR"):', '    n = {}']
- grouped={}
- for x in nodes: grouped.setdefault(x.get("group"),[]).append(x)
- for x in grouped.get(None,[]): lines.append(f'    n["{x["id"]}"] = {cls.get(x["type"],"AppServices")}("{x["label"]}")')
- for g,xs in grouped.items():
-  if not g: continue
-  lines.append(f'    with Cluster("{g}"):')
-  for x in xs: lines.append(f'        n["{x["id"]}"] = {cls.get(x["type"],"AppServices")}("{x["label"]}")')
- for a,b in edges: lines.append(f'    n["{a}"] >> n["{b}"]')
- return "\n".join(lines)+"\n"
+ imports='''from diagrams import Diagram, Cluster, Edge\nfrom diagrams.azure.network import Firewall, VirtualNetworks, VirtualNetworkGateways\nfrom diagrams.azure.compute import AppServices\nfrom diagrams.azure.security import KeyVaults\nfrom diagrams.azure.database import SQLDatabases\nfrom diagrams.azure.storage import StorageAccounts\nfrom diagrams.azure.devops import ApplicationInsights\n'''
+ cls={"firewall":"Firewall","app":"AppServices","keyvault":"KeyVaults","sql":"SQLDatabases","storage":"StorageAccounts","monitor":"ApplicationInsights","bastion":"VirtualNetworks","vpn":"VirtualNetworkGateways"}
+ containers={x['id']:x for x in model['containers']}; children={}; nodechildren={}
+ for c in model['containers']: children.setdefault(c.get('parent'),[]).append(c)
+ for n in model['nodes']: nodechildren.setdefault(n.get('parent'),[]).append(n)
+ lines=[imports,'with Diagram("Generated Architecture", filename="diagrams/generated_architecture", outformat="png", show=False, direction="LR", graph_attr={"compound":"true","splines":"ortho"}):','    n = {}','    anchors = {}']
+ def emit(parent,indent):
+  for n in nodechildren.get(parent,[]): lines.append(' '*indent+f'n["{n["id"]}"] = {cls.get(n["type"],"AppServices")}("{n["label"]}")')
+  for c in children.get(parent,[]):
+   lines.append(' '*indent+f'with Cluster("{c["label"]}"):')
+   # invisible/simple anchor makes container-to-container peering possible without duplicate visible VNet icons
+   lines.append(' '*(indent+4)+f'anchors["{c["id"]}"] = VirtualNetworks("")')
+   emit(c['id'],indent+4)
+ emit(None,4)
+ for a,b,label in model['edges']:
+  lines.append(f'    anchors["{a}"] >> Edge(label="{label}", style="dashed") >> anchors["{b}"]')
+ return '\n'.join(lines)+'\n'
+
+def drawio_xml(model):
+ esc=lambda s: html.escape(str(s),quote=True)
+ cells=['<mxCell id="0"/>','<mxCell id="1" parent="0"/>']; geom={}
+ containers={x['id']:x for x in model['containers']}; children={}; nodechildren={}
+ for c in model['containers']: children.setdefault(c.get('parent'),[]).append(c)
+ for n in model['nodes']: nodechildren.setdefault(n.get('parent'),[]).append(n)
+ def size(cid):
+  cc=children.get(cid,[]); nn=nodechildren.get(cid,[])
+  if not cc: return (300,max(150,80+90*len(nn)))
+  widths=[]; heights=[]
+  for x in cc:
+   w,h=size(x['id']); widths.append(w); heights.append(h)
+  return (max(360,max(widths,default=300)+60),80+sum(heights)+30*max(0,len(heights)-1))
+ def emit(parent,parentcell,x,y):
+  cy=40
+  for c in children.get(parent,[]):
+   w,h=size(c['id']); style='swimlane;html=1;rounded=1;startSize=32;horizontal=1;container=1;collapsible=0;'
+   cells.append(f'<mxCell id="{c["id"]}" value="{esc(c["label"])}" style="{style}" vertex="1" parent="{parentcell}"><mxGeometry x="{x}" y="{y+cy}" width="{w}" height="{h}" as="geometry"/></mxCell>'); geom[c['id']]=(w,h)
+   emit(c['id'],c['id'],20,10); cy+=h+30
+  ny=50
+  for n in nodechildren.get(parent,[]):
+   cells.append(f'<mxCell id="{n["id"]}" value="{esc(n["label"])}" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="{parentcell}"><mxGeometry x="40" y="{ny}" width="180" height="60" as="geometry"/></mxCell>'); ny+=80
+ emit(None,'1',20,10)
+ # edges connect container boundaries, retaining hierarchy
+ for i,(a,b,label) in enumerate(model['edges']): cells.append(f'<mxCell id="e{i}" value="{esc(label)}" edge="1" parent="1" source="{a}" target="{b}" style="edgeStyle=orthogonalEdgeStyle;dashed=1;endArrow=block;html=1;"><mxGeometry relative="1" as="geometry"/></mxCell>')
+ return '<mxfile><diagram name="Architecture"><mxGraphModel><root>'+''.join(cells)+'</root></mxGraphModel></diagram></mxfile>'
+
 @app.get("/")
 def home(): return render_template_string(HTML,req="",ready=False,error=None)
 @app.post("/generate")
 def generate():
- req=request.form.get("requirements","").strip(); fmt=request.form.get("format","drawio")
- model=interpret(req); code=pycode(model)
- open(os.path.join(BASE,"last_requirement.txt"),"w").write(req)
- open(os.path.join(BASE,"architecture_model.json"),"w").write(json.dumps(model,indent=2))
- p=os.path.join(BASE,"generated_architecture.py"); open(p,"w").write(code)
- try:
-  result=subprocess.run(["python",p],cwd=BASE,check=True,timeout=30,capture_output=True,text=True)
+ req=request.form.get("requirements","").strip(); fmt=request.form.get("format","drawio"); model=interpret(req); code=pycode(model)
+ open(os.path.join(BASE,"last_requirement.txt"),"w").write(req); open(os.path.join(BASE,"architecture_model.json"),"w").write(json.dumps(model,indent=2)); p=os.path.join(BASE,"generated_architecture.py"); open(p,"w").write(code)
+ try: subprocess.run(["python",p],cwd=BASE,check=True,timeout=30,capture_output=True,text=True)
  except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-  detail=(getattr(e,"stderr",None) or getattr(e,"stdout",None) or str(e))[-2000:]
-  return render_template_string(HTML,req=req,ready=False,error=detail)
- drawio=os.path.join(OUT,"generated_architecture.drawio")
- cells=['<mxCell id="0"/>','<mxCell id="1" parent="0"/>']
- for idx,x in enumerate(model["nodes"]):
-  xx=60+(idx%4)*220; yy=80+(idx//4)*130
-  cells.append(f'<mxCell id="{x["id"]}" value="{x["label"]}" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="{xx}" y="{yy}" width="160" height="70" as="geometry"/></mxCell>')
- for i,(a,b) in enumerate(model["edges"]): cells.append(f'<mxCell id="e{i}" edge="1" parent="1" source="{a}" target="{b}" style="edgeStyle=orthogonalEdgeStyle;endArrow=block;"><mxGeometry relative="1" as="geometry"/></mxCell>')
- xml='<mxfile><diagram name="Architecture"><mxGraphModel><root>'+''.join(cells)+'</root></mxGraphModel></diagram></mxfile>'
- open(drawio,"w").write(xml)
+  detail=(getattr(e,"stderr",None) or getattr(e,"stdout",None) or str(e))[-2000:]; return render_template_string(HTML,req=req,ready=False,error=detail)
+ open(os.path.join(OUT,"generated_architecture.drawio"),"w").write(drawio_xml(model))
  return render_template_string(HTML,req=req,ready=True,error=None,model=json.dumps(model,indent=2),code=code,visio=fmt=="visio",stamp=os.path.getmtime(p))
 @app.get("/python")
 def python_file(): return send_file(os.path.join(BASE,"generated_architecture.py"),as_attachment=True,download_name="generated_architecture.py")
