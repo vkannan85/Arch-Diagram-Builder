@@ -5,4 +5,4 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN mkdir -p diagrams
-CMD ["sh","-c","gunicorn --bind 0.0.0.0:$PORT app:app"]
+CMD ["gunicorn","--bind","0.0.0.0:3000","app_fixed:app"]
