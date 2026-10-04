@@ -5,4 +5,5 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN mkdir -p diagrams
-CMD ["gunicorn","--bind","0.0.0.0:3000","--timeout","120","app_rebuilt:app"]
+EXPOSE 3000
+CMD ["gunicorn","--bind","0.0.0.0:3000","--timeout","120","app_v4:app"]
