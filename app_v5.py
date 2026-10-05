@@ -20,15 +20,20 @@ def load_icons():
  if ICONS:return
  try:
   data=urllib.request.urlopen(ICON_ZIP,timeout=20).read(); z=zipfile.ZipFile(io.BytesIO(data)); files=[n for n in z.namelist() if n.lower().endswith('.svg')]
-  wanted={'firewall':['firewalls.svg'],'gateway':['virtual network gateways.svg','virtual-network-gateways.svg'],'expressroute':['expressroute circuits.svg','expressroute-circuits.svg'],'vm':['virtual machines.svg','virtual-machines.svg','windows virtual desktop.svg']}
+  wanted={'firewall':['firewalls.svg'],'gateway':['virtual network gateways.svg','virtual-network-gateways.svg'],'expressroute':['expressroute circuits.svg','expressroute-circuits.svg']}
   for k,terms in wanted.items():
    hit=next((n for n in files if any(n.lower().endswith(x) for x in terms)),None)
    if hit: ICONS[k]=base64.b64encode(z.read(hit)).decode()
+  vm_candidates=[n for n in files if re.search(r'(^|[/\\_ -])virtual[ _-]?machines?\.svg$',n,re.I)]
+  if not vm_candidates: vm_candidates=[n for n in files if re.search(r'virtual[ _-]?machines?',n,re.I) and 'scale' not in n.lower() and 'sql' not in n.lower()]
+  if vm_candidates:
+   hit=sorted(vm_candidates,key=lambda n:(len(n),n.lower()))[0]; ICONS['vm']=base64.b64encode(z.read(hit)).decode(); print('Azure VM icon:',hit)
+  else: print('Azure VM icon not found; candidates:',[n for n in files if 'virtual' in n.lower() and 'machine' in n.lower()][:20])
  except Exception as e: print('Azure icon pack fallback:',e)
 def icon(k,x,y,w=76,h=76):
  load_icons()
  if k in ICONS:return f'<image x="{x}" y="{y}" width="{w}" height="{h}" preserveAspectRatio="xMidYMid meet" href="data:image/svg+xml;base64,{ICONS[k]}"/>'
- return f'<g transform="translate({x},{y})"><rect width="{w}" height="{h}" rx="12" fill="#0078d4"/><text x="{w/2}" y="{h/2+6}" text-anchor="middle" fill="white" font-family="Arial" font-size="15">Azure</text></g>'
+ return f'<g transform="translate({x},{y})"><rect width="{w}" height="{h}" rx="12" fill="#fff4ce" stroke="#d83b01" stroke-width="3"/><text x="{w/2}" y="{h/2-4}" text-anchor="middle" fill="#a4262c" font-family="Arial" font-size="12" font-weight="700">ICON</text><text x="{w/2}" y="{h/2+14}" text-anchor="middle" fill="#a4262c" font-family="Arial" font-size="11">MISSING</text></g>'
 def datacentre(x,y):
  return f'''<g transform="translate({x},{y})"><rect width="154" height="132" rx="10" fill="#eef2f6" stroke="#60788f" stroke-width="2"/><path d="M20 32h114v82H20z" fill="#d9e1e8" stroke="#60788f" stroke-width="2"/><rect x="32" y="44" width="30" height="58" rx="3" fill="#fff" stroke="#60788f"/><rect x="72" y="44" width="30" height="58" rx="3" fill="#fff" stroke="#60788f"/><rect x="112" y="44" width="12" height="58" rx="2" fill="#fff" stroke="#60788f"/><g fill="#5b9bd5"><circle cx="40" cy="53" r="2"/><circle cx="80" cy="53" r="2"/><circle cx="118" cy="53" r="2"/></g><path d="M10 32L77 5l67 27" fill="none" stroke="#60788f" stroke-width="4"/><text x="77" y="126" text-anchor="middle" font-family="Segoe UI,Arial" font-size="12" fill="#40566b">On-prem servers</text></g>'''
 def layout(m):
@@ -66,5 +71,5 @@ def rdraw():return Response(drawio(CURRENT),mimetype='application/xml',headers={
 @app.route('/v5/model')
 def rmodel():return Response(json.dumps(CURRENT,indent=2),mimetype='application/json') if CURRENT else Response('{}',404)
 @app.route('/health')
-def health():return {'ok':True,'version':'v5','renderer':'official-icons-datacentre-orthogonal-peering'}
+def health():return {'ok':True,'version':'v5','renderer':'official-vm-icon-resolver'}
 if __name__=='__main__':app.run(host='0.0.0.0',port=3000)
